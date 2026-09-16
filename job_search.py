@@ -318,14 +318,7 @@ def extract_min_years_required(description):
     return int(match.group(1)) if match else None
 
 
-def passes_yoe_filter(description):
-    """Permissive when no description is available or no explicit YOE is
-    stated — this only screens OUT postings that name a number, it never
-    screens IN based on absence of one."""
-    if not description:
-        return True
-    min_years = extract_min_years_required(description)
-    return min_years is None or min_years <= YOE_MAX
+YOE_STRETCH_MAX = 4  # only for a clean core-marketing title at a curated company
 
 
 # Corporate-suffix words stripped before comparing two company names, so
@@ -416,6 +409,40 @@ def looks_us_location(location):
 # Weights per the user's own breakdown, not a made-up default.
 _STRONG_TITLE_TERMS = ["analyst", "coordinator", "associate", "specialist"]
 _CORE_SUBJECT_TERMS = ["marketing", "brand", "gtm", "go-to-market", "go to market", "growth"]
+
+
+def _is_clean_core_marketing_title(title):
+    """A title that's squarely marketing with no ops/strategy/compliance/etc
+    riding along — "Specialist, Sales & Marketing" qualifies, "GTM Strategy
+    & Operations, Policy" never would even reach this check (already
+    excluded by passes_keyword_filter), but something like "Marketing
+    Operations Coordinator" is deliberately NOT clean here, since the user
+    asked for the 4-year stretch on a great role only, not any borderline
+    ops-flavored one."""
+    t = title.lower()
+    has_anchor = any(_matches_term(t, k) for k in MARKETING_ANCHOR_TERMS)
+    has_strong = any(_matches_term(t, k) for k in _STRONG_TITLE_TERMS)
+    has_ambiguous = any(_matches_term(t, k) for k in AMBIGUOUS_FUNCTION_TERMS)
+    return has_anchor and has_strong and not has_ambiguous
+
+
+def passes_yoe_filter(description, title, company):
+    """Permissive when no description is available or no explicit YOE is
+    stated — this only screens OUT postings that name a number, it never
+    screens IN based on absence of one. A stated requirement above YOE_MAX
+    is still allowed up to YOE_STRETCH_MAX, but only for a clean core-
+    marketing title at one of the curated companies — never for a
+    borderline ops-flavored title or a random aggregator-found company."""
+    if not description:
+        return True
+    min_years = extract_min_years_required(description)
+    if min_years is None or min_years <= YOE_MAX:
+        return True
+    allow_stretch = (
+        matches_curated_company(company) is not None
+        and _is_clean_core_marketing_title(title)
+    )
+    return allow_stretch and min_years <= YOE_STRETCH_MAX
 
 
 def compute_fit_score(row):
@@ -550,7 +577,7 @@ def fetch_direct_ats():
                 continue
             for title, location, url, description in jobs:
                 if (passes_keyword_filter(title) and passes_location_filter(location)
-                        and passes_yoe_filter(description)):
+                        and passes_yoe_filter(description, title, company)):
                     rows.append(make_row(title, company, location, source, url))
             time.sleep(REQUEST_DELAY)
     return rows
@@ -686,7 +713,7 @@ def fetch_adzuna(app_id, app_key):
             url_ = j.get("redirect_url", "")
             description = j.get("description", "")
             if not (passes_keyword_filter(title) and passes_location_filter(location)
-                    and passes_yoe_filter(description)):
+                    and passes_yoe_filter(description, title, company)):
                 continue
             keep, company_name = gate_and_canonicalize(company, location)
             if keep:
@@ -712,7 +739,7 @@ def fetch_remotive():
         url_ = j.get("url", "")
         description = j.get("description", "")
         if not (passes_keyword_filter(title) and passes_location_filter(location)
-                and passes_yoe_filter(description)):
+                and passes_yoe_filter(description, title, company)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -741,7 +768,7 @@ def fetch_jobicy():
         if (j.get("jobLevel") or "").strip().lower() in ("senior", "director"):
             continue
         if not (passes_keyword_filter(title) and passes_location_filter(location)
-                and passes_yoe_filter(description)):
+                and passes_yoe_filter(description, title, company)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -765,7 +792,7 @@ def fetch_arbeitnow():
         url_ = j.get("url", "")
         description = j.get("description", "")
         if not (passes_keyword_filter(title) and passes_location_filter(location)
-                and passes_yoe_filter(description)):
+                and passes_yoe_filter(description, title, company)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -891,11 +918,50 @@ def _esc(s):
 _SECTOR_DISPLAY_ORDER = ["automotive", "tech", "cpg", NON_CURATED_SECTOR]
 
 
+DIGEST_WIDTH = 700  # wider single column, with generous per-card padding
+                     # below so it reads as roomy rather than a narrow list
+
+
+def _render_digest_card(row, index, color):
+    location = _esc(row["Location"]) or "Location not listed"
+    return f"""\
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+              <tr>
+                <td width="30" valign="top">
+                  <div style="width:22px;height:22px;border:1.5px solid {color};border-radius:11px;
+                              color:{color};font-size:11px;font-weight:800;text-align:center;
+                              line-height:21px;">{index}</div>
+                </td>
+                <td style="border-left:3px solid {color};padding-left:16px;">
+                  <div style="font-size:17px;font-weight:700;color:#111827;line-height:1.4;">
+                    {_esc(row["Title"])}
+                  </div>
+                  <div style="font-size:14px;color:{color};font-weight:700;margin-top:4px;">
+                    {_esc(row["Company"])}
+                  </div>
+                  <div style="font-size:13px;color:#6B7280;margin-top:3px;">
+                    {location} &middot; via {_esc(row["Source"])}
+                  </div>
+                  <div style="margin-top:12px;">
+                    <a href="{_esc(row["URL"])}"
+                       style="display:inline-block;border:1.5px solid {color};color:{color};
+                              font-size:13.5px;font-weight:700;text-decoration:none;padding:7px 16px;
+                              border-radius:6px;">
+                      View &amp; Apply &rarr;
+                    </a>
+                  </div>
+                </td>
+              </tr>
+            </table>"""
+
+
 def render_html_digest(rows):
     """Plain inline-styled HTML, table-based layout for email-client safety.
     Gmail's send pipeline strips `background`/`background-color` outright
     (confirmed by inspecting the stored message), so every accent here is
-    done with `border` and `color` instead — no fills."""
+    done with `border` and `color` instead — no fills. Single wide column
+    (a 2-column grid felt cramped) with generous padding between cards so
+    a 15-role digest still feels roomy rather than a dense list."""
     today = date.today().strftime("%B %-d, %Y") if os.name != "nt" else date.today().strftime("%B %d, %Y")
 
     grouped = {}
@@ -911,7 +977,7 @@ def render_html_digest(rows):
         color = SECTOR_COLORS.get(sector, SECTOR_COLORS[NON_CURATED_SECTOR])
         sections.append(f"""
         <tr>
-          <td style="padding:24px 24px 10px 24px;">
+          <td style="padding:26px 28px 12px 28px;">
             <div style="display:inline-block;font-size:12px;font-weight:800;letter-spacing:.08em;
                         text-transform:uppercase;color:{color};border-bottom:2.5px solid {color};
                         padding-bottom:5px;">
@@ -921,43 +987,16 @@ def render_html_digest(rows):
         </tr>""")
         for row in grouped[sector]:
             counter += 1
-            location = _esc(row["Location"]) or "Location not listed"
+            card_html = _render_digest_card(row, counter, color)
             sections.append(f"""
         <tr>
-          <td style="padding:0 24px 16px 24px;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
-              <tr>
-                <td width="30" valign="top">
-                  <div style="width:22px;height:22px;border:1.5px solid {color};border-radius:11px;
-                              color:{color};font-size:11px;font-weight:800;text-align:center;
-                              line-height:21px;">{counter}</div>
-                </td>
-                <td style="border-left:3px solid {color};padding-left:14px;">
-                  <div style="font-size:16px;font-weight:700;color:#111827;line-height:1.35;">
-                    {_esc(row["Title"])}
-                  </div>
-                  <div style="font-size:13.5px;color:{color};font-weight:700;margin-top:3px;">
-                    {_esc(row["Company"])}
-                  </div>
-                  <div style="font-size:12.5px;color:#6B7280;margin-top:2px;">
-                    {location} &middot; via {_esc(row["Source"])}
-                  </div>
-                  <div style="margin-top:10px;">
-                    <a href="{_esc(row["URL"])}"
-                       style="display:inline-block;border:1.5px solid {color};color:{color};
-                              font-size:13px;font-weight:700;text-decoration:none;padding:7px 14px;
-                              border-radius:6px;">
-                      View &amp; Apply &rarr;
-                    </a>
-                  </div>
-                </td>
-              </tr>
-            </table>
+          <td style="padding:0 28px 22px 28px;">
+{card_html}
           </td>
         </tr>""")
 
     sections_html = "".join(sections) if sections else """
-        <tr><td style="padding:32px 24px;text-align:center;color:#6B7280;font-size:14px;">
+        <tr><td style="padding:32px 28px;text-align:center;color:#6B7280;font-size:14px;">
           No new qualifying roles found today — nothing worth interrupting your day for.
         </td></tr>"""
 
@@ -968,18 +1007,18 @@ def render_html_digest(rows):
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F4F6;padding:24px 0;">
     <tr>
       <td align="center">
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0"
-               style="background:#FFFFFF;border-radius:10px;overflow:hidden;max-width:600px;width:100%;
+        <table role="presentation" width="{DIGEST_WIDTH}" cellpadding="0" cellspacing="0"
+               style="background:#FFFFFF;border-radius:10px;overflow:hidden;max-width:{DIGEST_WIDTH}px;width:100%;
                       border-top:4px solid #111827;">
           <tr>
-            <td style="padding:24px 24px 18px 24px;border-bottom:1px solid #E5E7EB;">
+            <td style="padding:24px 28px 18px 28px;border-bottom:1px solid #E5E7EB;">
               <div style="font-size:20px;font-weight:800;color:#111827;">Job Search Digest</div>
               <div style="font-size:13px;color:#6B7280;margin-top:4px;">{_esc(today)} &middot; {len(rows)} new role{"s" if len(rows) != 1 else ""}</div>
             </td>
           </tr>
           {sections_html}
           <tr>
-            <td style="padding:18px 24px;text-align:center;border-top:1px solid #E5E7EB;">
+            <td style="padding:18px 28px;text-align:center;border-top:1px solid #E5E7EB;">
               <div style="font-size:12px;color:#9CA3AF;">
                 Automated daily search &middot; full list always in job_search_results.csv
               </div>
