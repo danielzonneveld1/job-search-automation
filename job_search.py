@@ -23,6 +23,7 @@ Output: appends new rows to OUTPUT_CSV, deduped against TRACKER_CSV and
 """
 
 import csv
+import html
 import os
 import re
 import time
@@ -105,17 +106,20 @@ TALENTBREW_COMPANIES = {
     "Ford": "https://www.careers.ford.com",
 }
 
-# Broad net: title must contain one of these...
+# Broad net: title must contain one of these. Narrowed to marketing/GTM
+# only — "strategy", "insights", "sales analyst", "revenue analyst", and
+# "commercial analyst" used to qualify on their own, which is how pure
+# corporate-strategy, sales-ops, and finance-analyst roles slipped in.
 INCLUDE_KEYWORDS = [
     "marketing", "brand", "gtm", "go-to-market", "go to market", "growth",
-    "strategy", "insights", "market research", "sales analyst",
-    "revenue analyst", "commercial analyst",
 ]
-# ...and none of these: seniority / SDR-AE false positives, plus
-# engineering/technical/legal roles that happen to sit on a "Growth" or
-# "GTM" team (e.g. "Software Engineer, GTM Innovation" or "Commercial
-# Counsel, GTM" are not marketing jobs). Matched as whole words, so "vp"
-# won't miss "VP," and won't wrongly hit words like "developer".
+# ...and none of these: seniority / SDR-AE false positives, engineering/
+# technical/legal roles that happen to sit on a "Growth" or "GTM" team
+# (e.g. "Software Engineer, GTM Innovation" is not a marketing job).
+# Matched as whole words, so "vp" won't miss "VP," and won't wrongly hit
+# words like "developer". Phrases like "private equity" are excluded as
+# full phrases rather than the bare word "equity", since "equity" alone
+# would wrongly exclude legitimate CPG titles like "Brand Equity".
 EXCLUDE_KEYWORDS = [
     "senior", "sr", "lead", "founding", "director", "vp", "vice president",
     "head of", "principal", "staff", "chief", "svp", "evp", "sdr",
@@ -124,7 +128,37 @@ EXCLUDE_KEYWORDS = [
     "developer", "scientist", "architect", "software", "devops", "sre",
     "designer", "recruiter", "recruiting", "counsel", "attorney",
     "technical", "leader", "partner",
+    "private equity", "growth equity", "equity research", "venture capital",
+    "investment banking",
+    # Unlike "operations"/"insights"/"strategy" below, "finance"/"financial"
+    # next to "marketing" in a title (e.g. "Strategic Finance, International
+    # & Marketing") means an FP&A-style finance role that covers marketing
+    # spend, not a marketing job — so these stay unconditionally excluded
+    # rather than anchor-overridable.
+    "finance", "financial",
 ]
+
+# "Manager" alone almost always means 3+ years of experience at the
+# companies on this list — a PMM or Growth Marketing Manager role at
+# OpenAI/Anthropic-caliber companies is never entry-level. But CPG's
+# classic entry-level track is literally titled "Assistant Brand Manager"
+# or "Associate Marketing Manager", so "manager" only disqualifies a title
+# when it isn't paired with one of those junior qualifiers.
+MANAGER_JUNIOR_QUALIFIERS = ["assistant", "associate"]
+
+# Words that signal a non-marketing org function (ops/strategy/finance/
+# compliance) that often rides along on a "GTM" team name without the job
+# itself being marketing — "GTM Strategy & Operations, Policy" and "GTM
+# Compliance Analyst" are not marketing roles. But these same words show up
+# in genuinely good junior marketing titles too ("Brand & Marketing
+# Operations Associate", "Marketing Analyst, Consumer Insights"), so they
+# only disqualify a title that has no unambiguous marketing anchor word.
+AMBIGUOUS_FUNCTION_TERMS = [
+    "strategy", "operations", "insights", "compliance", "policy", "legal",
+    "risk", "audit", "accounting", "tax", "treasury", "underwriting",
+    "actuarial", "systems",
+]
+MARKETING_ANCHOR_TERMS = ["marketing", "brand"]
 
 
 def _matches_term(text, term):
@@ -132,6 +166,18 @@ def _matches_term(text, term):
     if " " in term:
         return term in text
     return re.search(r"\b" + re.escape(term) + r"\b", text) is not None
+
+
+def _is_unqualified_manager_title(t):
+    return _matches_term(t, "manager") and not any(
+        _matches_term(t, q) for q in MANAGER_JUNIOR_QUALIFIERS
+    )
+
+
+def _is_unanchored_ambiguous_title(t):
+    has_ambiguous = any(_matches_term(t, k) for k in AMBIGUOUS_FUNCTION_TERMS)
+    has_anchor = any(_matches_term(t, k) for k in MARKETING_ANCHOR_TERMS)
+    return has_ambiguous and not has_anchor
 
 
 BAY_AREA_KEYWORDS = [
@@ -171,8 +217,8 @@ NON_US_COUNTRIES = [
 
 ADZUNA_QUERY_TERMS = [
     "marketing analyst", "GTM analyst", "brand marketing",
-    "marketing coordinator", "sales analyst", "strategy analyst",
-    "marketing associate",
+    "marketing coordinator", "marketing associate", "growth marketing",
+    "product marketing",
 ]
 
 # Cap on how many new rows get written per run — applying to 194 roles a
@@ -182,6 +228,22 @@ ADZUNA_QUERY_TERMS = [
 # outside the top 50 before.
 MAX_OUTPUT_ROWS = 50
 MAX_PER_COMPANY = 5  # one hot company (e.g. a hiring spree at OpenAI) can't eat the whole list
+
+# How many of the top rows go into the daily email digest (separate from the
+# 50-row CSV cap — an email should be scannable in under a minute). The CSV's
+# per-company cap of 5 is too loose for a 10-row digest — a single hiring
+# spree could otherwise fill most of the email — so the digest gets its own,
+# tighter cap.
+DIGEST_TOP_N = 15
+DIGEST_MAX_PER_COMPANY = 2
+DIGEST_HTML_PATH = "email_digest.html"
+
+SECTOR_COLORS = {
+    "automotive": "#B45309",  # amber
+    "tech": "#2563EB",        # blue
+    "cpg": "#059669",         # green
+    NON_CURATED_SECTOR: "#6B7280",  # gray
+}
 
 GOOGLE_MAX_QUERIES_PER_DAY = 100
 REQUEST_TIMEOUT = 15
@@ -215,7 +277,55 @@ def passes_keyword_filter(title):
         return False
     if any(_matches_term(t, k) for k in EXCLUDE_KEYWORDS):
         return False
+    if _is_unqualified_manager_title(t):
+        return False
+    if _is_unanchored_ambiguous_title(t):
+        return False
     return True
+
+
+# Title-based filtering has a ceiling: plenty of postings with clean junior
+# titles ("Analyst", "Specialist", non-manager) at competitive companies
+# still explicitly ask for 4+ years in the actual description. Several
+# sources (Greenhouse with content=true, Ashby, Lever, Adzuna, Remotive,
+# Jobicy, Arbeitnow) already return the full description text for free —
+# no extra API call — so read the real requirement when it's stated
+# in-line rather than continuing to guess from the title alone. Workday and
+# TalentBrew don't expose description text in their list endpoints (would
+# need a second request per posting), so those two still rely on title
+# filtering only.
+YOE_MAX = 3
+_YOE_PATTERN = re.compile(
+    r"(\d{1,2})\s*(?:\+|-|to)?\s*\d{0,2}\+?\s*years?\s*"
+    r"(?:of\s+)?(?:relevant\s+|professional\s+|related\s+)?experience",
+    re.IGNORECASE,
+)
+
+
+def _strip_html(text):
+    text = html.unescape(text or "")
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def extract_min_years_required(description):
+    """First explicit 'N years [of] experience' figure in the text, or None
+    if the description doesn't state one. Takes the first match rather than
+    the smallest/largest, since postings that list both a minimum and a
+    preferred/bonus qualification almost always state the actual minimum
+    first."""
+    text = _strip_html(description)
+    match = _YOE_PATTERN.search(text)
+    return int(match.group(1)) if match else None
+
+
+def passes_yoe_filter(description):
+    """Permissive when no description is available or no explicit YOE is
+    stated — this only screens OUT postings that name a number, it never
+    screens IN based on absence of one."""
+    if not description:
+        return True
+    min_years = extract_min_years_required(description)
+    return min_years is None or min_years <= YOE_MAX
 
 
 # Corporate-suffix words stripped before comparing two company names, so
@@ -270,10 +380,42 @@ def passes_location_filter(location):
     return is_remote or not is_foreign
 
 
+# Full US state names, for the Workday-specific check below. Not used as
+# the general-purpose location filter's allowlist — that broke Adzuna's
+# "City, County" format (no state present) — but Workday tenants shared
+# across a multinational (e.g. Nissan's "alliance" tenant serves the whole
+# Renault-Nissan-Mitsubishi group) can return European postings with only
+# a bare city name and no country at all, which the country blocklist above
+# can't catch. Workday results get this extra, stricter check.
+US_STATE_NAMES = [
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+    "maine", "maryland", "massachusetts", "michigan", "minnesota",
+    "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york",
+    "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+    "pennsylvania", "rhode island", "south carolina", "south dakota",
+    "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+    "west virginia", "wisconsin", "wyoming", "district of columbia",
+]
+
+
+def looks_us_location(location):
+    loc = (location or "").lower()
+    if not loc:
+        return True  # unknown, don't drop
+    if is_bay_area(loc) or any(k in loc for k in REMOTE_KEYWORDS):
+        return True
+    if "united states" in loc or "usa" in loc or "u.s." in loc:
+        return True
+    return any(state in loc for state in US_STATE_NAMES)
+
+
 # Fit score = 60% location + 40% match (company fit + role/title fit).
 # Weights per the user's own breakdown, not a made-up default.
 _STRONG_TITLE_TERMS = ["analyst", "coordinator", "associate", "specialist"]
-_CORE_SUBJECT_TERMS = ["marketing", "brand", "gtm", "go-to-market", "go to market", "sales analyst"]
+_CORE_SUBJECT_TERMS = ["marketing", "brand", "gtm", "go-to-market", "go to market", "growth"]
 
 
 def compute_fit_score(row):
@@ -332,7 +474,10 @@ def make_row(title, company, location, source, url):
 
 def fetch_greenhouse(company):
     for slug in slugify_variants(company):
-        url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
+        # content=true costs nothing extra (still one request) but includes
+        # the full job description, which is what lets passes_yoe_filter
+        # catch a stated "5+ years" that the title alone never would.
+        url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
         try:
             resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         except requests.RequestException:
@@ -344,7 +489,7 @@ def fetch_greenhouse(company):
             continue
         return [
             (j.get("title", ""), j.get("location", {}).get("name", ""),
-             j.get("absolute_url", ""))
+             j.get("absolute_url", ""), j.get("content", ""))
             for j in jobs
         ]
     return []
@@ -364,7 +509,7 @@ def fetch_lever(company):
             continue
         return [
             (j.get("text", ""), (j.get("categories") or {}).get("location", ""),
-             j.get("hostedUrl", ""))
+             j.get("hostedUrl", ""), j.get("descriptionPlain", j.get("description", "")))
             for j in jobs
         ]
     return []
@@ -383,7 +528,8 @@ def fetch_ashby(company):
         if not jobs:
             continue
         return [
-            (j.get("title", ""), j.get("location", ""), j.get("jobUrl", ""))
+            (j.get("title", ""), j.get("location", ""), j.get("jobUrl", ""),
+             j.get("descriptionHtml", j.get("descriptionPlain", "")))
             for j in jobs
         ]
     return []
@@ -402,8 +548,9 @@ def fetch_direct_ats():
             except Exception as e:
                 print(f"  [warn] {source} lookup failed for {company}: {e}")
                 continue
-            for title, location, url in jobs:
-                if passes_keyword_filter(title) and passes_location_filter(location):
+            for title, location, url, description in jobs:
+                if (passes_keyword_filter(title) and passes_location_filter(location)
+                        and passes_yoe_filter(description)):
                     rows.append(make_row(title, company, location, source, url))
             time.sleep(REQUEST_DELAY)
     return rows
@@ -429,7 +576,8 @@ def fetch_workday_company(company, cfg):
             title = j.get("title", "")
             location = j.get("locationsText", "")
             url = base + j.get("externalPath", "")
-            if passes_keyword_filter(title) and passes_location_filter(location):
+            if (passes_keyword_filter(title) and passes_location_filter(location)
+                    and looks_us_location(location)):
                 rows.append(make_row(title, company, location, "Workday", url))
         time.sleep(REQUEST_DELAY)
     return rows
@@ -536,7 +684,9 @@ def fetch_adzuna(app_id, app_key):
             loc_obj = j.get("location") or {}
             location = adzuna_location(loc_obj, loc_obj.get("display_name", ""))
             url_ = j.get("redirect_url", "")
-            if not (passes_keyword_filter(title) and passes_location_filter(location)):
+            description = j.get("description", "")
+            if not (passes_keyword_filter(title) and passes_location_filter(location)
+                    and passes_yoe_filter(description)):
                 continue
             keep, company_name = gate_and_canonicalize(company, location)
             if keep:
@@ -560,7 +710,9 @@ def fetch_remotive():
         company = j.get("company_name", "")
         location = j.get("candidate_required_location", "")
         url_ = j.get("url", "")
-        if not (passes_keyword_filter(title) and passes_location_filter(location)):
+        description = j.get("description", "")
+        if not (passes_keyword_filter(title) and passes_location_filter(location)
+                and passes_yoe_filter(description)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -583,7 +735,13 @@ def fetch_jobicy():
         company = j.get("companyName", "")
         location = j.get("jobGeo", "")
         url_ = j.get("url", "")
-        if not (passes_keyword_filter(title) and passes_location_filter(location)):
+        description = j.get("jobDescription", j.get("jobExcerpt", ""))
+        # Jobicy tags each posting with an explicit level, so use it
+        # directly rather than relying on the description text alone.
+        if (j.get("jobLevel") or "").strip().lower() in ("senior", "director"):
+            continue
+        if not (passes_keyword_filter(title) and passes_location_filter(location)
+                and passes_yoe_filter(description)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -605,7 +763,9 @@ def fetch_arbeitnow():
         company = j.get("company_name", "")
         location = j.get("location", "")
         url_ = j.get("url", "")
-        if not (passes_keyword_filter(title) and passes_location_filter(location)):
+        description = j.get("description", "")
+        if not (passes_keyword_filter(title) and passes_location_filter(location)
+                and passes_yoe_filter(description)):
             continue
         keep, company_name = gate_and_canonicalize(company, location)
         if keep:
@@ -717,6 +877,124 @@ def select_top_rows(all_rows, total_slots, company_cap):
 
 
 # --------------------------------------------------------------------------
+# EMAIL DIGEST (HTML)
+# --------------------------------------------------------------------------
+
+def _esc(s):
+    return html.escape(s or "", quote=True)
+
+
+# Fixed sector display order (rather than alphabetical or fit-score order)
+# so the digest reads the same shape every day — automotive/tech/cpg first
+# since those are the named target industries, "other" (aggregator finds
+# outside the curated company list) last.
+_SECTOR_DISPLAY_ORDER = ["automotive", "tech", "cpg", NON_CURATED_SECTOR]
+
+
+def render_html_digest(rows):
+    """Plain inline-styled HTML, table-based layout for email-client safety.
+    Gmail's send pipeline strips `background`/`background-color` outright
+    (confirmed by inspecting the stored message), so every accent here is
+    done with `border` and `color` instead — no fills."""
+    today = date.today().strftime("%B %-d, %Y") if os.name != "nt" else date.today().strftime("%B %d, %Y")
+
+    grouped = {}
+    for row in rows:
+        sector = COMPANY_TO_SECTOR.get(row["Company"], NON_CURATED_SECTOR)
+        grouped.setdefault(sector, []).append(row)
+    ordered_sectors = [s for s in _SECTOR_DISPLAY_ORDER if s in grouped]
+    ordered_sectors += [s for s in grouped if s not in ordered_sectors]
+
+    sections = []
+    counter = 0
+    for sector in ordered_sectors:
+        color = SECTOR_COLORS.get(sector, SECTOR_COLORS[NON_CURATED_SECTOR])
+        sections.append(f"""
+        <tr>
+          <td style="padding:24px 24px 10px 24px;">
+            <div style="display:inline-block;font-size:12px;font-weight:800;letter-spacing:.08em;
+                        text-transform:uppercase;color:{color};border-bottom:2.5px solid {color};
+                        padding-bottom:5px;">
+              {_esc(sector)}
+            </div>
+          </td>
+        </tr>""")
+        for row in grouped[sector]:
+            counter += 1
+            location = _esc(row["Location"]) or "Location not listed"
+            sections.append(f"""
+        <tr>
+          <td style="padding:0 24px 16px 24px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+              <tr>
+                <td width="30" valign="top">
+                  <div style="width:22px;height:22px;border:1.5px solid {color};border-radius:11px;
+                              color:{color};font-size:11px;font-weight:800;text-align:center;
+                              line-height:21px;">{counter}</div>
+                </td>
+                <td style="border-left:3px solid {color};padding-left:14px;">
+                  <div style="font-size:16px;font-weight:700;color:#111827;line-height:1.35;">
+                    {_esc(row["Title"])}
+                  </div>
+                  <div style="font-size:13.5px;color:{color};font-weight:700;margin-top:3px;">
+                    {_esc(row["Company"])}
+                  </div>
+                  <div style="font-size:12.5px;color:#6B7280;margin-top:2px;">
+                    {location} &middot; via {_esc(row["Source"])}
+                  </div>
+                  <div style="margin-top:10px;">
+                    <a href="{_esc(row["URL"])}"
+                       style="display:inline-block;border:1.5px solid {color};color:{color};
+                              font-size:13px;font-weight:700;text-decoration:none;padding:7px 14px;
+                              border-radius:6px;">
+                      View &amp; Apply &rarr;
+                    </a>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>""")
+
+    sections_html = "".join(sections) if sections else """
+        <tr><td style="padding:32px 24px;text-align:center;color:#6B7280;font-size:14px;">
+          No new qualifying roles found today — nothing worth interrupting your day for.
+        </td></tr>"""
+
+    return f"""\
+<!doctype html>
+<html>
+<body style="margin:0;padding:0;background:#F3F4F6;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3F4F6;padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0"
+               style="background:#FFFFFF;border-radius:10px;overflow:hidden;max-width:600px;width:100%;
+                      border-top:4px solid #111827;">
+          <tr>
+            <td style="padding:24px 24px 18px 24px;border-bottom:1px solid #E5E7EB;">
+              <div style="font-size:20px;font-weight:800;color:#111827;">Job Search Digest</div>
+              <div style="font-size:13px;color:#6B7280;margin-top:4px;">{_esc(today)} &middot; {len(rows)} new role{"s" if len(rows) != 1 else ""}</div>
+            </td>
+          </tr>
+          {sections_html}
+          <tr>
+            <td style="padding:18px 24px;text-align:center;border-top:1px solid #E5E7EB;">
+              <div style="font-size:12px;color:#9CA3AF;">
+                Automated daily search &middot; full list always in job_search_results.csv
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+
+# --------------------------------------------------------------------------
 # MAIN
 # --------------------------------------------------------------------------
 
@@ -792,6 +1070,11 @@ def main():
     written_counts = {}
     for row in top_rows:
         written_counts[row["Source"]] = written_counts.get(row["Source"], 0) + 1
+
+    digest_rows = apply_company_cap(top_rows, DIGEST_MAX_PER_COMPANY)[:DIGEST_TOP_N]
+    with open(DIGEST_HTML_PATH, "w", encoding="utf-8") as f:
+        f.write(render_html_digest(digest_rows))
+    print(f"Wrote {len(digest_rows)}-row email digest to {DIGEST_HTML_PATH}.")
 
     print(f"\nFound {len(all_new_rows)} qualifying new rows across all sources; "
           f"wrote the top {len(top_rows)} by fit score to {OUTPUT_CSV}.")
