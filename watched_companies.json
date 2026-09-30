@@ -1,0 +1,82 @@
+[
+  {
+    "name": "Instinct",
+    "aliases": [],
+    "sector": "tech",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-28",
+    "note": "$1B Series C at $10B valuation (Sequoia, Benchmark, Coatue) — consumer personal AI agent"
+  },
+  {
+    "name": "OpenEvidence",
+    "aliases": [],
+    "sector": "healthcare",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-26",
+    "note": "$250M round at $15B valuation (a16z + hospital systems) — AI medical research tool for physicians"
+  },
+  {
+    "name": "Rightway",
+    "aliases": [],
+    "sector": "healthcare",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-25",
+    "note": "$155M Series E led by Francisco Partners — pharmacy benefits management and healthcare navigation for employees"
+  },
+  {
+    "name": "Ultraviolette",
+    "aliases": [],
+    "sector": "automotive",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-24",
+    "note": "$85M round co-led by Yali Capital and TDK Ventures — high-performance electric motorcycles and EV platforms, Bengaluru"
+  },
+  {
+    "name": "NG.Cash",
+    "aliases": [],
+    "sector": "finance",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-24",
+    "note": "$15M round led by Blockchain Capital — digital accounts, payments, and credit for teens/young adults in Brazil"
+  },
+  {
+    "name": "Amber Electric",
+    "aliases": [],
+    "sector": "energy",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-23",
+    "note": "$56.3M Series E led by Morgan Stanley — optimizes home battery, solar, and EV energy use for consumers"
+  },
+  {
+    "name": "Bird&Be",
+    "aliases": [],
+    "sector": "healthcare",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-23",
+    "note": "$13M Series A co-led by BDC Thrive and BFG Partners — DTC fertility supplements and at-home reproductive health tests"
+  },
+  {
+    "name": "Teal Health",
+    "aliases": [],
+    "sector": "healthcare",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-23",
+    "note": "$22M Series A led by .406 Ventures — DTC at-home HPV cervical cancer screening kits with telehealth follow-up"
+  },
+  {
+    "name": "Unit1 Studio",
+    "aliases": [],
+    "sector": "media",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-22",
+    "note": "$20M equity and production financing led by Balderton Capital — CG movable avatar concerts, London"
+  },
+  {
+    "name": "Aristotle",
+    "aliases": [],
+    "sector": "other_industries",
+    "added_date": "2026-09-29",
+    "source": "StrictlyVC 2026-09-22",
+    "note": "$5M seed led by True Ventures — voice-based AI tutoring for students ages 13-18, San Francisco"
+  }
+]

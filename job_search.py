@@ -24,6 +24,7 @@ Output: appends new rows to OUTPUT_CSV, deduped against TRACKER_CSV and
 
 import csv
 import html
+import json
 import os
 import re
 import time
@@ -84,13 +85,141 @@ COMPANIES = {
         "L'Oreal": ["L'Oreal USA"], "Estee Lauder": ["The Estee Lauder Companies"],
         "Hershey": ["The Hershey Company"], "Mars": ["Mars Inc"], "Diageo": [],
         "Constellation Brands": [], "Keurig Dr Pepper": ["KDP"],
-        "Danone": [], "Nike": [],
+        "Danone": [], "Nike": [], "Adidas": [],
+    },
+    # Everything below is new industry breadth beyond tech/automotive/CPG —
+    # a starting roster of major, recognizable names per sector (not
+    # exhaustive), per the user's explicit direction to widen scope beyond
+    # the original three industries while staying anchored to well-known
+    # companies or high-growth startups rather than obscure local employers.
+    "finance": {
+        "JPMorgan Chase": ["JPMorgan", "J.P. Morgan", "Chase"],
+        "Goldman Sachs": ["Goldman"],
+        "American Express": ["Amex"],
+        "Visa": [], "Mastercard": [],
+        "Allianz": [], "AXA": [],
+        "Prudential": ["Prudential Financial"],
+        "State Farm": [],
+        "Progressive": ["Progressive Insurance"],
+    },
+    "healthcare": {
+        "Pfizer": [],
+        "Johnson & Johnson": ["J&J", "Johnson and Johnson"],
+        "Novartis": [], "Roche": [], "AstraZeneca": [],
+        "UnitedHealth Group": ["UnitedHealth", "UnitedHealthcare", "Optum"],
+        "CVS Health": ["CVS"],
+        "Medtronic": [],
+    },
+    "retail": {
+        "Walmart": [], "Target": [],
+        "Home Depot": ["The Home Depot"],
+        "IKEA": [],
+        "Inditex": ["Zara"],
+        "Sephora": [], "Nordstrom": [],
+    },
+    "travel": {
+        "Marriott": ["Marriott International"],
+        "Hilton": ["Hilton Worldwide"],
+        "Airbnb": [],
+        "Booking.com": ["Booking Holdings"],
+        "Delta": ["Delta Air Lines"],
+        "Emirates": [], "Lufthansa": [],
+        "Carnival Cruise Line": ["Carnival Corporation", "Carnival"],
+    },
+    "media": {
+        "Disney": ["The Walt Disney Company", "Walt Disney"],
+        "Netflix": [],
+        "Warner Bros. Discovery": ["Warner Bros Discovery", "WBD"],
+        "Spotify": [],
+        "Universal Music Group": ["UMG"],
+        "ESPN": [],
+        "Live Nation": ["Live Nation Entertainment"],
+    },
+    "telecom": {
+        "Verizon": [], "AT&T": [], "Vodafone": [], "T-Mobile": [],
+    },
+    "energy": {
+        "Shell": [], "BP": [],
+        "ExxonMobil": ["Exxon Mobil", "Exxon"],
+        "Chevron": [],
+        "TotalEnergies": ["Total"],
+        "NextEra Energy": ["NextEra"],
+        "Enel": [],
+    },
+    "luxury": {
+        "LVMH": [], "Kering": [],
+        # Not "Hermès" — normalize_company_for_match only strips ASCII
+        # punctuation, so an accented alias would never actually match its
+        # own canonical name. Plain "Hermes" still slug-matches fine on
+        # Greenhouse/Ashby/etc even though it won't match an accented
+        # spelling in an aggregator result.
+        "Hermes": [],
+        "Ralph Lauren": [],
+    },
+    # Consulting, real estate/construction, education, and industrial/
+    # logistics grouped into one bucket — each has too few named targets
+    # on their own to justify a separate digest color/section.
+    "other_industries": {
+        "Deloitte": [], "PwC": ["PricewaterhouseCoopers"],
+        "EY": ["Ernst & Young"], "KPMG": [],
+        "McKinsey": ["McKinsey & Company"], "Accenture": [],
+        "CBRE": [], "Prologis": [], "Lennar": [], "Bechtel": [],
+        "Coursera": [], "Pearson": [],
+        "Caterpillar": [], "Siemens": [],
+        "GE": ["General Electric"], "Honeywell": [],
+        "FedEx": [], "UPS": [], "DHL": [], "Maersk": [],
+    },
+    # Staffing/recruiting agencies for contract and part-time work. These
+    # don't need their own fetcher — confirmed live that Robert Half
+    # postings already come through Adzuna's feed under their own name, just
+    # filtered out today because they're not curated and rarely Bay Area.
+    # Curating them unlocks national scope through the exact same mechanism
+    # as every other curated company, no scraping required.
+    "contract_staffing": {
+        "Robert Half": [],
+        "24 Seven": ["24 Seven Talent"],
+        "Randstad USA": ["Randstad"],
+        "Scion Staffing": [],
     },
 }
 ALL_COMPANIES = [name for group in COMPANIES.values() for name in group]
 COMPANY_ALIASES = {name: aliases for group in COMPANIES.values() for name, aliases in group.items()}
 COMPANY_TO_SECTOR = {name: sector for sector, group in COMPANIES.items() for name in group}
 NON_CURATED_SECTOR = "other"  # local Bay Area companies outside the curated list
+
+# Companies flagged by a separate, weekly "recently funded" check (reads a
+# VC funding newsletter, picks plausible marketing-hiring targets — that
+# judgment call belongs to an LLM reading prose, not this script, so it's
+# done by a scheduled task, not here). This is a standing watch-list, not a
+# same-day add: a newly funded company often doesn't have marketing roles
+# open yet, so entries stay and get re-checked every daily run until
+# removed by hand. Merged additively — a name already in COMPANIES keeps
+# its hand-vetted sector rather than being overwritten.
+WATCHED_COMPANIES_PATH = "watched_companies.json"
+WATCHED_COMPANY_NAMES = set()  # for the digest's "recently funded" marker
+
+
+def load_watched_companies():
+    if not os.path.exists(WATCHED_COMPANIES_PATH):
+        return
+    try:
+        with open(WATCHED_COMPANIES_PATH, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"  [warn] couldn't read {WATCHED_COMPANIES_PATH}: {e}")
+        return
+    for entry in entries:
+        name = (entry.get("name") or "").strip()
+        sector = entry.get("sector") or NON_CURATED_SECTOR
+        if not name or name in COMPANY_ALIASES:
+            continue
+        ALL_COMPANIES.append(name)
+        COMPANY_ALIASES[name] = entry.get("aliases", [])
+        COMPANY_TO_SECTOR[name] = sector
+        WATCHED_COMPANY_NAMES.add(name)
+
+
+load_watched_companies()
 
 # Workday tenant/site can't be guessed from a company name, so these are
 # found by hand (search "<company> myworkdayjobs.com") and confirmed
@@ -136,6 +265,12 @@ EXCLUDE_KEYWORDS = [
     # spend, not a marketing job — so these stay unconditionally excluded
     # rather than anchor-overridable.
     "finance", "financial",
+    # An "Executive Assistant (Communications & Marketing)" is an admin
+    # support role with marketing-adjacent duties tacked on, not a
+    # marketing job — excluded as a phrase so a real "Marketing Assistant"
+    # or "Assistant Brand Manager" title (which only contains "assistant"
+    # alone) is untouched.
+    "executive assistant",
 ]
 
 # "Manager" alone almost always means 3+ years of experience at the
@@ -178,6 +313,32 @@ def _is_unanchored_ambiguous_title(t):
     has_ambiguous = any(_matches_term(t, k) for k in AMBIGUOUS_FUNCTION_TERMS)
     has_anchor = any(_matches_term(t, k) for k in MARKETING_ANCHOR_TERMS)
     return has_ambiguous and not has_anchor
+
+
+# A trailing "III"/"IV"/"V" on an Associate/Analyst/Coordinator title is a
+# standard job-ladder tier marker (common at staffing firms and large
+# corporates: Associate I -> entry, II -> a couple years in, III+ -> a
+# senior individual contributor on that ladder) — caught a real case where
+# "Marketing Associate III" at Kforce actually required 5 years, which the
+# truncated aggregator description text didn't reveal. "I"/"II" are left
+# alone since those still commonly fall within 0-3 YOE.
+_SENIOR_TIER_SUFFIX = re.compile(r"\b(iii|iv|v)\s*$", re.IGNORECASE)
+
+
+def _has_senior_tier_suffix(title):
+    return _SENIOR_TIER_SUFFIX.search(title.strip()) is not None
+
+
+# "Growth Marketing Intern (Summer 2027)" posted in 2026 is almost always a
+# program for current students who return to school after — not useful for
+# someone already graduated. A bare year token ahead of the current year is
+# a cheap, reliable signal for that, without needing to guess at "recent
+# graduate welcome" language buried in the description.
+_YEAR_TOKEN = re.compile(r"\b(20\d{2})\b")
+
+
+def _has_future_year(title):
+    return any(int(y) > date.today().year for y in _YEAR_TOKEN.findall(title))
 
 
 BAY_AREA_KEYWORDS = [
@@ -239,10 +400,35 @@ DIGEST_MAX_PER_COMPANY = 2
 DIGEST_HTML_PATH = "email_digest.html"
 
 SECTOR_COLORS = {
-    "automotive": "#B45309",  # amber
-    "tech": "#2563EB",        # blue
-    "cpg": "#059669",         # green
-    NON_CURATED_SECTOR: "#6B7280",  # gray
+    "automotive": "#B45309",        # amber
+    "tech": "#2563EB",              # blue
+    "cpg": "#059669",               # green
+    "finance": "#7C3AED",           # violet
+    "healthcare": "#DB2777",        # pink
+    "retail": "#CA8A04",            # gold
+    "travel": "#0891B2",            # teal
+    "media": "#C026D3",             # fuchsia
+    "telecom": "#4F46E5",           # indigo
+    "energy": "#65A30D",            # olive
+    "luxury": "#78350F",            # dark brown
+    "other_industries": "#334155",  # slate
+    "contract_staffing": "#B91C1C", # deep red — visually flags "not a direct/FT apply"
+    NON_CURATED_SECTOR: "#6B7280",  # gray — uncurated aggregator finds
+}
+
+# Sector keys are lowercase/underscored for use as dict keys and in
+# matching logic; this maps a few of them to a nicer digest section label
+# where the raw key would look wrong once uppercased ("OTHER_INDUSTRIES").
+# Anything not listed here just displays as its own (single-word) name.
+SECTOR_DISPLAY_NAMES = {
+    "other_industries": "Other Industries",
+    "contract_staffing": "Contract & Part-Time",
+    # NON_CURATED_SECTOR ("other") is any company NOT on any curated list —
+    # it qualified purely because the role itself is in the Bay Area, per
+    # the original "no point knowing about a random-city opening if
+    # relocating was never on the table" rule. Spelled out so it doesn't
+    # read as an unexplained catch-all bucket.
+    NON_CURATED_SECTOR: "Other Bay Area Companies",
 }
 
 GOOGLE_MAX_QUERIES_PER_DAY = 100
@@ -281,6 +467,10 @@ def passes_keyword_filter(title):
         return False
     if _is_unanchored_ambiguous_title(t):
         return False
+    if _has_senior_tier_suffix(title):
+        return False
+    if _has_future_year(title):
+        return False
     return True
 
 
@@ -295,9 +485,20 @@ def passes_keyword_filter(title):
 # need a second request per posting), so those two still rely on title
 # filtering only.
 YOE_MAX = 3
+# Requiring "experience" immediately after "years" (only a single optional
+# qualifier word in between) missed real requirements like "8+ years of
+# consumer growth, acquisition, or performance marketing experience" (a
+# long descriptive phrase before "experience") and "(6+ years) experience
+# in employer branding" (a parenthesis breaking the direct adjacency). A
+# lookahead for "experience" anywhere in the next ~80 characters — but not
+# past a sentence boundary, so it doesn't wrongly latch onto an unrelated
+# "experience" mentioned in a later, unconnected sentence — catches both.
+# The separator between the number and "years" also needs to cover "10 or
+# more years" (GM's actual phrasing, missed by only accepting +/-/to).
 _YOE_PATTERN = re.compile(
-    r"(\d{1,2})\s*(?:\+|-|to)?\s*\d{0,2}\+?\s*years?\s*"
-    r"(?:of\s+)?(?:relevant\s+|professional\s+|related\s+)?experience",
+    r"(\d{1,2})\s*(?:\+|-|to|or\s+more|or\s+greater|or\s+above)?\s*"
+    r"\d{0,2}\+?\s*years?\b"
+    r"(?=[^.]{0,80}\bexperience\b)",
     re.IGNORECASE,
 )
 
@@ -577,16 +778,44 @@ def fetch_direct_ats():
                 continue
             for title, location, url, description in jobs:
                 if (passes_keyword_filter(title) and passes_location_filter(location)
-                        and passes_yoe_filter(description, title, company)):
+                        and passes_yoe_filter(description, title, company)
+                        and passes_curated_company_location_gate(company, location)):
                     rows.append(make_row(title, company, location, source, url))
             time.sleep(REQUEST_DELAY)
     return rows
+
+
+# A confirmed 404 means the listing itself is gone (filled/pulled) — drop
+# it outright rather than let it reach the digest as a dead link. Distinct
+# from any other fetch failure (timeout, a 403 bot-block, a transient 5xx),
+# which is ambiguous rather than a confirmed removal, so those stay
+# permissive (empty string -> passes_yoe_filter treats "no description
+# available" as pass, same as always).
+LISTING_REMOVED = object()
+
+
+def _fetch_workday_job_description(detail_api, external_path):
+    """One extra request per posting that already passed the cheap filters
+    — confirmed this returns the same full description the listing page
+    shows (caught GM's real "10 or more years" requirement that the search
+    endpoint's summary fields never exposed). Pure HTTP, no LLM/token
+    cost."""
+    try:
+        resp = requests.get(detail_api + external_path, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException:
+        return ""
+    if resp.status_code == 404:
+        return LISTING_REMOVED
+    if resp.status_code != 200:
+        return ""
+    return resp.json().get("jobPostingInfo", {}).get("jobDescription", "")
 
 
 def fetch_workday_company(company, cfg):
     base = f"https://{cfg['tenant']}.{cfg['wd']}.myworkdayjobs.com/{cfg['site']}"
     api = (f"https://{cfg['tenant']}.{cfg['wd']}.myworkdayjobs.com/"
            f"wday/cxs/{cfg['tenant']}/{cfg['site']}/jobs")
+    detail_api = f"https://{cfg['tenant']}.{cfg['wd']}.myworkdayjobs.com/wday/cxs/{cfg['tenant']}/{cfg['site']}"
     rows = []
     for term in ADZUNA_QUERY_TERMS:
         try:
@@ -602,12 +831,36 @@ def fetch_workday_company(company, cfg):
         for j in resp.json().get("jobPostings", []):
             title = j.get("title", "")
             location = j.get("locationsText", "")
-            url = base + j.get("externalPath", "")
-            if (passes_keyword_filter(title) and passes_location_filter(location)
+            external_path = j.get("externalPath", "")
+            url = base + external_path
+            if not (passes_keyword_filter(title) and passes_location_filter(location)
                     and looks_us_location(location)):
+                continue
+            description = _fetch_workday_job_description(detail_api, external_path)
+            time.sleep(REQUEST_DELAY)
+            if description is LISTING_REMOVED:
+                continue
+            if passes_yoe_filter(description, title, company):
                 rows.append(make_row(title, company, location, "Workday", url))
         time.sleep(REQUEST_DELAY)
     return rows
+
+
+def _fetch_talentbrew_job_description(job_url):
+    """Same idea as the Workday detail fetch — one extra request per
+    posting that already passed the cheap filters, no LLM cost. The
+    individual job page's raw HTML is passed straight to passes_yoe_filter,
+    which strips tags itself; no need to isolate just the description
+    section."""
+    try:
+        resp = requests.get(job_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException:
+        return ""
+    if resp.status_code == 404:
+        return LISTING_REMOVED
+    if resp.status_code != 200:
+        return ""
+    return resp.text
 
 
 def fetch_talentbrew_company(company, base_url):
@@ -630,7 +883,13 @@ def fetch_talentbrew_company(company, base_url):
             job_url = base_url + href if href.startswith("/") else href
             loc_el = h2.parent.select_one(".job-location")
             location = loc_el.get_text(strip=True) if loc_el else ""
-            if passes_keyword_filter(title) and passes_location_filter(location):
+            if not (passes_keyword_filter(title) and passes_location_filter(location)):
+                continue
+            description = _fetch_talentbrew_job_description(job_url)
+            time.sleep(REQUEST_DELAY)
+            if description is LISTING_REMOVED:
+                continue
+            if passes_yoe_filter(description, title, company):
                 rows.append(make_row(title, company, location, "TalentBrew", job_url))
         time.sleep(REQUEST_DELAY)
     return rows
@@ -660,13 +919,54 @@ def fetch_configured_ats():
 # table. A curated-list company (Ford, Nike, etc.) is worth seeing anywhere.)
 # --------------------------------------------------------------------------
 
+# Hotel chains post under one brand name but operate thousands of
+# individually run/franchised properties — curating "Marriott" nationally
+# would otherwise surface a generic front-desk-adjacent marketing role at a
+# random single property, not the corporate marketing team the curation is
+# actually meant to unlock. So for these specific companies, national scope
+# only applies to a posting that's actually at corporate HQ; anything else
+# still needs to clear the regular Bay Area bar like any uncurated company.
+HOTEL_CHAIN_HQ_HINTS = {
+    "Marriott": ["bethesda"],       # Marriott International HQ
+    "Hilton": ["mclean", "tysons"],  # Hilton Worldwide HQ
+}
+
+
+def _is_remote_location(location):
+    """Narrower than REMOTE_KEYWORDS (which also treats bare "United
+    States"/"USA" as a permissive default for country-less formats) — this
+    is specifically for "is this posting actually remote," used to gate
+    contract/staffing roles to Bay Area or true remote only."""
+    loc = (location or "").lower()
+    return any(k in loc for k in ("remote", "work from home", "wfh", "anywhere"))
+
+
+def passes_curated_company_location_gate(canonical_company, location):
+    """A curated match normally unlocks national scope unconditionally, but
+    two categories need a tighter check first: a hotel chain only counts
+    nationally if it's actually corporate HQ (not a random single
+    property), and contract/staffing agencies only count if Bay Area or
+    truly remote (a temp gig isn't worth relocating for). Used by both the
+    aggregator gate and the direct-ATS path, in case one of these companies
+    ever turns up a Greenhouse/Ashby/Lever board."""
+    hq_hints = HOTEL_CHAIN_HQ_HINTS.get(canonical_company)
+    if hq_hints is not None:
+        loc = (location or "").lower()
+        return any(h in loc for h in hq_hints) or is_bay_area(location)
+    if COMPANY_TO_SECTOR.get(canonical_company) == "contract_staffing":
+        return is_bay_area(location) or _is_remote_location(location)
+    return True
+
+
 def gate_and_canonicalize(company, location):
     """(keep, company_name_to_use) — canonicalizes to the curated name on a
     match (so "Ford Motor Company" shows as "Ford"); otherwise keeps the
     raw name, only if the role is Bay Area."""
     canonical = matches_curated_company(company)
     if canonical:
-        return True, canonical
+        if passes_curated_company_location_gate(canonical, location):
+            return True, canonical
+        return False, canonical
     if is_bay_area(location):
         return True, company
     return False, company
@@ -912,10 +1212,19 @@ def _esc(s):
 
 
 # Fixed sector display order (rather than alphabetical or fit-score order)
-# so the digest reads the same shape every day — automotive/tech/cpg first
-# since those are the named target industries, "other" (aggregator finds
-# outside the curated company list) last.
-_SECTOR_DISPLAY_ORDER = ["automotive", "tech", "cpg", NON_CURATED_SECTOR]
+# so the digest reads the same shape every day — the original three named
+# target industries first, then the newer industry breadth, "other"
+# (aggregator finds outside every curated list) always last.
+_SECTOR_DISPLAY_ORDER = [
+    "automotive", "tech", "cpg",
+    "finance", "healthcare", "retail", "travel", "media", "telecom",
+    "energy", "luxury", "other_industries",
+    "contract_staffing",  # categorically different (temp/contract via an
+                           # agency, not a direct full-time apply) — kept
+                           # last among curated sectors so it reads as its
+                           # own distinct group, not mixed into industries
+    NON_CURATED_SECTOR,
+]
 
 
 DIGEST_WIDTH = 700  # wider single column, with generous per-card padding
@@ -924,32 +1233,36 @@ DIGEST_WIDTH = 700  # wider single column, with generous per-card padding
 
 def _render_digest_card(row, index, color):
     location = _esc(row["Location"]) or "Location not listed"
+    funded_marker = " 🔥" if row["Company"] in WATCHED_COMPANY_NAMES else ""
+    # Compact 2-line card (chosen over a 2-column grid and a 4-line
+    # version after comparing three options) — title and the apply link
+    # share one line, company/location/source share the next. Each card is
+    # its own bordered box — Gmail's send pipeline strips CSS background/
+    # background-color outright (confirmed earlier this project), but the
+    # legacy HTML `bgcolor` attribute is a distinct mechanism and survives
+    # in testing, so it's used here as a bonus off-white fill on top of the
+    # (guaranteed-to-render) border.
     return f"""\
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" bgcolor="#FAFAFA"
+                   style="border:1px solid #E5E7EB;border-radius:8px;">
               <tr>
-                <td width="30" valign="top">
-                  <div style="width:22px;height:22px;border:1.5px solid {color};border-radius:11px;
-                              color:{color};font-size:11px;font-weight:800;text-align:center;
-                              line-height:21px;">{index}</div>
-                </td>
-                <td style="border-left:3px solid {color};padding-left:16px;">
-                  <div style="font-size:17px;font-weight:700;color:#111827;line-height:1.4;">
-                    {_esc(row["Title"])}
-                  </div>
-                  <div style="font-size:14px;color:{color};font-weight:700;margin-top:4px;">
-                    {_esc(row["Company"])}
-                  </div>
-                  <div style="font-size:13px;color:#6B7280;margin-top:3px;">
-                    {location} &middot; via {_esc(row["Source"])}
-                  </div>
-                  <div style="margin-top:12px;">
-                    <a href="{_esc(row["URL"])}"
-                       style="display:inline-block;border:1.5px solid {color};color:{color};
-                              font-size:13.5px;font-weight:700;text-decoration:none;padding:7px 16px;
-                              border-radius:6px;">
-                      View &amp; Apply &rarr;
-                    </a>
-                  </div>
+                <td style="padding:10px 14px;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                    <tr>
+                      <td style="border-left:3px solid {color};padding-left:10px;">
+                        <div style="font-size:14.5px;font-weight:700;color:#111827;">
+                          {index}&nbsp; {_esc(row["Title"])}
+                          <a href="{_esc(row["URL"])}"
+                             style="font-size:12px;font-weight:700;color:{color};
+                                    text-decoration:none;margin-left:6px;">Apply &rarr;</a>
+                        </div>
+                        <div style="font-size:12px;color:#6B7280;margin-top:2px;">
+                          <span style="color:{color};font-weight:700;">{_esc(row["Company"])}{funded_marker}</span>
+                          &middot; {location} &middot; via {_esc(row["Source"])}
+                        </div>
+                      </td>
+                    </tr>
+                  </table>
                 </td>
               </tr>
             </table>"""
@@ -975,13 +1288,14 @@ def render_html_digest(rows):
     counter = 0
     for sector in ordered_sectors:
         color = SECTOR_COLORS.get(sector, SECTOR_COLORS[NON_CURATED_SECTOR])
+        label = SECTOR_DISPLAY_NAMES.get(sector, sector)
         sections.append(f"""
         <tr>
           <td style="padding:26px 28px 12px 28px;">
             <div style="display:inline-block;font-size:12px;font-weight:800;letter-spacing:.08em;
                         text-transform:uppercase;color:{color};border-bottom:2.5px solid {color};
                         padding-bottom:5px;">
-              {_esc(sector)}
+              {_esc(label)}
             </div>
           </td>
         </tr>""")
@@ -990,7 +1304,7 @@ def render_html_digest(rows):
             card_html = _render_digest_card(row, counter, color)
             sections.append(f"""
         <tr>
-          <td style="padding:0 28px 22px 28px;">
+          <td style="padding:0 28px 8px 28px;">
 {card_html}
           </td>
         </tr>""")
