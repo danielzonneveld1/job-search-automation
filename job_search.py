@@ -75,6 +75,17 @@ COMPANIES = {
         "DoorDash": [], "Robinhood": [], "Chime": [], "Salesforce": [],
         "Revolut": [], "Google": ["Alphabet"], "Microsoft": [],
         "Amazon": [], "Meta": ["Facebook"], "Apple": [],
+        # Mid-market (roughly hundreds to a couple thousand employees) —
+        # substantial, legitimate employers with real marketing/GTM teams,
+        # just not household names. Per explicit direction to cast a wider
+        # net beyond mega-cap and hyper-famous-startup names.
+        "Klaviyo": [], "Braze": [], "Iterable": [], "Attentive": [],
+        "Gong": [], "Outreach": [], "Drift": [], "Intercom": [],
+        "Asana": [], "monday.com": ["Monday.com", "Monday"],
+        "Webflow": [], "Calendly": [], "Typeform": [], "Miro": [],
+        "ClickUp": [], "Amplitude": [], "Mixpanel": [], "Squarespace": [],
+        "Bill.com": [], "Marqeta": [], "Affirm": [], "Remitly": [],
+        "Samsara": [],
     },
     "cpg": {
         "Procter & Gamble": ["P&G"], "Unilever": [], "PepsiCo": [],
@@ -86,6 +97,10 @@ COMPANIES = {
         "Hershey": ["The Hershey Company"], "Mars": ["Mars Inc"], "Diageo": [],
         "Constellation Brands": [], "Keurig Dr Pepper": ["KDP"],
         "Danone": [], "Nike": [], "Adidas": [],
+        # Mid-market DTC consumer brands — same "substantial but not a
+        # household name" bar as the tech additions above.
+        "Allbirds": [], "Bombas": [], "Away": [], "Glossier": [],
+        "Olipop": [], "Rothy's": [],
     },
     # Everything below is new industry breadth beyond tech/automotive/CPG —
     # a starting roster of major, recognizable names per sector (not
@@ -101,6 +116,9 @@ COMPANIES = {
         "Prudential": ["Prudential Financial"],
         "State Farm": [],
         "Progressive": ["Progressive Insurance"],
+        # Mid-market fintech/insurtech.
+        "Lemonade": [], "Root Insurance": ["Root"], "Next Insurance": [],
+        "Wealthfront": [], "Betterment": [],
     },
     "healthcare": {
         "Pfizer": [],
@@ -109,6 +127,10 @@ COMPANIES = {
         "UnitedHealth Group": ["UnitedHealth", "UnitedHealthcare", "Optum"],
         "CVS Health": ["CVS"],
         "Medtronic": [],
+        # Mid-market healthtech/insurtech/wellness.
+        "Included Health": [], "Oscar Health": ["Oscar"], "Cedar": [],
+        "Zocdoc": [], "GoodRx": [], "Headspace": [], "Hims & Hers": ["Hims and Hers", "Hims"],
+        "Ro": [],
     },
     "retail": {
         "Walmart": [], "Target": [],
@@ -116,6 +138,9 @@ COMPANIES = {
         "IKEA": [],
         "Inditex": ["Zara"],
         "Sephora": [], "Nordstrom": [],
+        # Mid-market retail/marketplace.
+        "ThredUp": [], "Rent the Runway": [], "Faire": [], "Poshmark": [],
+        "Stitch Fix": [],
     },
     "travel": {
         "Marriott": ["Marriott International"],
@@ -125,6 +150,8 @@ COMPANIES = {
         "Delta": ["Delta Air Lines"],
         "Emirates": [], "Lufthansa": [],
         "Carnival Cruise Line": ["Carnival Corporation", "Carnival"],
+        # Mid-market travel/hospitality.
+        "Sonder": [], "Hopper": [],
     },
     "media": {
         "Disney": ["The Walt Disney Company", "Walt Disney"],
@@ -134,6 +161,8 @@ COMPANIES = {
         "Universal Music Group": ["UMG"],
         "ESPN": [],
         "Live Nation": ["Live Nation Entertainment"],
+        # Mid-market media/publishing.
+        "Vox Media": [], "BuzzFeed": [],
     },
     "telecom": {
         "Verizon": [], "AT&T": [], "Vodafone": [], "T-Mobile": [],
@@ -145,6 +174,8 @@ COMPANIES = {
         "TotalEnergies": ["Total"],
         "NextEra Energy": ["NextEra"],
         "Enel": [],
+        # Mid-market clean energy/climate tech.
+        "ChargePoint": [], "EVgo": [], "Redwood Materials": [],
     },
     "luxury": {
         "LVMH": [], "Kering": [],
@@ -155,6 +186,8 @@ COMPANIES = {
         # spelling in an aggregator result.
         "Hermes": [],
         "Ralph Lauren": [],
+        # Mid-market premium/fashion-forward DTC brands.
+        "Skims": [], "Reformation": [],
     },
     # Consulting, real estate/construction, education, and industrial/
     # logistics grouped into one bucket — each has too few named targets
@@ -168,6 +201,9 @@ COMPANIES = {
         "Caterpillar": [], "Siemens": [],
         "GE": ["General Electric"], "Honeywell": [],
         "FedEx": [], "UPS": [], "DHL": [], "Maersk": [],
+        # Mid-market real estate/logistics/education.
+        "Compass": [], "Opendoor": [], "Flexport": [], "ShipBob": [],
+        "Guild Education": ["Guild"], "Handshake": [],
     },
     # Staffing/recruiting agencies for contract and part-time work. These
     # don't need their own fetcher — confirmed live that Robert Half
@@ -562,15 +598,43 @@ def is_bay_area(location):
     return any(k in loc for k in BAY_AREA_KEYWORDS)
 
 
+# Curated companies with real global offices (Braze, Klaviyo, etc.) can
+# post a listing with just a bare foreign city name and no country string
+# at all — caught Braze posting "São Paulo" with nothing else, which the
+# country blocklist above can't see. Deliberately NOT solved by requiring
+# a US state name instead (an allowlist) — that would wrongly reject
+# legitimate bare US city names with no state suffix, like "Austin" — so
+# this stays in the same permissive-by-default, blocklist shape as
+# NON_US_COUNTRIES, just extended to city names that commonly appear
+# without their country attached. Inherently incomplete; add more as
+# they're spotted rather than trying to enumerate every world city.
+NON_US_MAJOR_CITIES = [
+    "são paulo", "sao paulo", "rio de janeiro", "toronto", "vancouver",
+    "montreal", "london", "dublin", "amsterdam", "berlin", "munich",
+    "paris", "madrid", "barcelona", "milan", "rome", "zurich", "geneva",
+    "stockholm", "copenhagen", "oslo", "helsinki", "warsaw", "prague",
+    "vienna", "brussels", "lisbon", "athens", "bangalore", "bengaluru",
+    "mumbai", "delhi", "hyderabad", "pune", "chennai", "gurgaon",
+    "gurugram", "singapore", "hong kong", "tokyo", "osaka", "seoul",
+    "shanghai", "beijing", "shenzhen", "taipei", "manila", "jakarta",
+    "bangkok", "kuala lumpur", "sydney", "melbourne", "auckland",
+    "mexico city", "buenos aires", "santiago", "bogota", "bogotá",
+    "lima", "johannesburg", "cape town", "lagos", "nairobi", "cairo",
+    "tel aviv", "dubai", "abu dhabi", "riyadh",
+]
+
+
 def passes_location_filter(location):
     # Permissive by default (many US sources format location as "City,
     # County" with no state/country at all) — only reject a location that
-    # explicitly names a non-US country, unless it's also flagged remote.
+    # explicitly names a non-US country (or a major foreign city standing
+    # in for one), unless it's also flagged remote.
     loc = (location or "").lower()
     if not loc:
         return True  # unknown location, don't drop it
     is_remote = any(k in loc for k in REMOTE_KEYWORDS)
-    is_foreign = any(c in loc for c in NON_US_COUNTRIES)
+    is_foreign = (any(c in loc for c in NON_US_COUNTRIES)
+                  or any(c in loc for c in NON_US_MAJOR_CITIES))
     return is_remote or not is_foreign
 
 
